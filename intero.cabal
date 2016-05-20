@@ -48,6 +48,8 @@ executable intero
     Main.hs
   ghc-options:
     -Wall -O2 -threaded
+  cc-options:
+    -fPIC
   include-dirs:
     cbits/
   hs-source-dirs:
@@ -74,9 +76,15 @@ executable intero
     haskeline,
     process,
     transformers,
+    transformers-base,
+    monad-control,
+    exceptions,
     syb,
     containers,
-    time
+    vector,
+    time,
+    msgpack,
+    msgpack-rpc
 
   if impl(ghc>=8.0.1)
     build-depends:

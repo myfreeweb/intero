@@ -1,8 +1,13 @@
-resolver: lts-5.16
+resolver: lts-5.17
 packages:
 - '.'
+- location:
+    git: https://github.com/myfreeweb/msgpack-haskell.git
+    commit: a015ab145d4bb07ec5c1805215f5bf59662a5540
+  extra-dep: true
+  subdirs:
+    - msgpack
+    - msgpack-rpc
 extra-deps: []
 flags: {}
 extra-package-dbs: []
-nix:
-  packages: [ ncurses ]

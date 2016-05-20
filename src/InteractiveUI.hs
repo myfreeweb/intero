@@ -33,6 +33,7 @@ import           GHCi.RemoteTypes
 import qualified Paths_intero
 import           Data.Version (showVersion)
 import qualified Data.Map as M
+import qualified Data.Vector as V
 import           GhciInfo
 import           GhciTypes
 import           GhciFind
@@ -95,6 +96,8 @@ import           Control.Applicative hiding (empty)
 import           Control.Monad as Monad
 import           Control.Monad.Trans.Class
 import           Control.Monad.IO.Class
+import           Control.Monad.Trans.Control
+import           Control.Concurrent
 
 import           Data.Array
 import qualified Data.ByteString.Char8 as BS
@@ -124,6 +127,9 @@ import           System.IO.Unsafe ( unsafePerformIO )
 import           System.Process
 import           Text.Printf
 import           Text.Read ( readMaybe )
+import           Data.MessagePack.Object
+import           Data.MessagePack.Assoc
+import           Network.MessagePack.Server
 
 #ifndef mingw32_HOST_OS
 import           System.Posix hiding ( getEnv )
@@ -572,6 +578,51 @@ withGhcAppData right left = do
                right dir
         _ -> left
 
+rComplete :: String -> ServerT GHCi [String]
+rComplete str = do
+  (_, compls) <- lift $ ghciCompleteWord (reverse str, "")
+  return $ map (\(Completion r _ _) -> r) compls
+
+rType :: String -> ServerT GHCi String
+rType str = do
+  ty <- lift $ GHC.exprType str
+  dflags <- lift $ getDynFlags
+  return $ showSDoc dflags $ sep [text str, nest 2 (dcolon <+> pprTypeForUser ty)]
+
+rTypeAt :: String -> Int -> Int -> Int -> Int -> String -> ServerT GHCi String
+rTypeAt fp sl sc el ec sample = do
+  infos <- fmap mod_infos (lift getGHCiState)
+  result <- lift $ findType infos fp sample sl sc el ec
+  dflags <- lift $ getDynFlags
+  return $ case result of
+    FindTypeFail err -> err
+    FindType _ ty ->
+      showSDoc dflags $ sep [text sample, nest 2 (dcolon <+> ppr ty)]
+    FindTyThing _ tything ->
+      showSDoc dflags $ pprTyThing tything
+
+formatSpan :: Either String SrcSpan -> Object
+formatSpan (Left err) = toObject $ Assoc $ V.singleton ("error", err)
+formatSpan (Right (RealSrcSpan rs)) = toObject $ Assoc $ V.singleton ("loc", (unpackFS $ srcSpanFile rs, srcSpanStartLine rs, srcSpanStartCol rs, srcSpanEndLine rs, srcSpanEndCol rs))
+formatSpan (Right (UnhelpfulSpan fs)) = toObject $ Assoc $ V.singleton ("unhelpful", unpackFS fs)
+
+rLocAt :: String -> Int -> Int -> Int -> Int -> String -> ServerT GHCi Object
+rLocAt fp sl sc el ec sample = do
+  infos <- fmap mod_infos (lift getGHCiState)
+  result <- lift $ findLoc infos fp sample sl sc el ec
+  return $ formatSpan result
+
+rUsesAt :: String -> Int -> Int -> Int -> Int -> String -> ServerT GHCi Object
+rUsesAt fp sl sc el ec sample = do
+  infos <- fmap mod_infos (lift getGHCiState)
+  result <- lift $ findNameUses infos fp sample sl sc el ec
+  return $ case result of
+             Left err ->
+               toObject $ Assoc $ V.singleton ("error", err)
+             Right uses ->
+               toObject $ map (formatSpan . Right) uses
+
+
 runGHCi :: [(FilePath, Maybe Phase)] -> Maybe [String] -> GHCi ()
 runGHCi paths maybe_exprs = do
   dflags <- getDynFlags
@@ -607,10 +658,9 @@ runGHCi paths maybe_exprs = do
            -- NOTE: this assumes that runInputT won't affect the terminal;
            -- can we assume this will always be the case?
            -- This would be a good place for runFileInputT.
-           Right hdl ->
-               do runInputTWithPrefs defaultPrefs defaultSettings $
-                            runCommands $ fileLoop hdl
-                  liftIO (hClose hdl `catchIO` \_ -> return ())
+           Right hdl -> do
+             runInputTWithPrefs defaultPrefs defaultSettings $ runCommands $ fileLoop hdl
+             liftIO (hClose hdl `catchIO` \_ -> return ())
      where
       getDirectory f = case takeDirectory f of "" -> "."; d -> d
   --
@@ -650,9 +700,15 @@ runGHCi paths maybe_exprs = do
   modifyGHCiState (\s -> s { rdrNamesInScope = names })
 
   case maybe_exprs of
-        Nothing ->
-          do
-            -- enter the interactive loop
+        Nothing -> do
+            -- enter the interactive loop & fork the RPC server
+            _ <- liftBaseDiscard forkIO $ do
+              serveUnix ".intero.sock" $
+                [ method "complete" rComplete
+                , method "type" rType
+                , method "type-at" rTypeAt
+                , method "loc-at" rLocAt
+                , method "uses-at" rUsesAt ]
             runGHCiInput $ runCommands $ nextInputLine show_prompt is_tty
         Just exprs -> do
             -- just evaluate the expression we were given
@@ -823,9 +879,10 @@ runCommands = runCommands' handler Nothing
 
 runCommands' :: (SomeException -> GHCi Bool) -- ^ Exception handler
              -> Maybe (GHCi ()) -- ^ Source error handler
-             -> InputT GHCi (Maybe String) -> InputT GHCi ()
+             -> InputT GHCi (Maybe String)
+             -> InputT GHCi ()
 runCommands' eh sourceErrorHandler gCmd = do
-    b <- ghandle (\e -> case fromException e of
+  b <- ghandle (\e -> case fromException e of
                           Just UserInterrupt -> return $ Just False
                           _ -> case fromException e of
                                  Just ghce ->
@@ -833,12 +890,12 @@ runCommands' eh sourceErrorHandler gCmd = do
                                       return Nothing
                                  _other ->
                                    liftIO (Exception.throwIO e))
-            (runOneCommand eh gCmd)
-    case b of
-      Nothing -> return ()
-      Just success -> do
-        when (not success) $ maybe (return ()) lift sourceErrorHandler
-        runCommands' eh sourceErrorHandler gCmd
+               (runOneCommand eh gCmd)
+  case b of
+    Nothing -> return ()
+    Just success -> do
+      when (not success) $ maybe (return ()) lift sourceErrorHandler
+      runCommands' eh sourceErrorHandler gCmd
 
 -- | Evaluate a single line of user input (either :<command> or Haskell code)
 runOneCommand :: (SomeException -> GHCi Bool) -> InputT GHCi (Maybe String)
@@ -3591,7 +3648,7 @@ tryBool m = do
 -- Utils
 
 lookupModule :: GHC.GhcMonad m => String -> m Module
-lookupModule mName = lookupModuleName (GHC.mkModuleName mName)
+lookupModule mName = lookupModuleName GHC.mkModuleName mName)
 
 lookupModuleName :: GHC.GhcMonad m => ModuleName -> m Module
 lookupModuleName mName = GHC.lookupModule mName Nothing

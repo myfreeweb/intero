@@ -1,6 +1,9 @@
 {-# LANGUAGE UnboxedTuples #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE MagicHash #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE CPP #-}
 {-# OPTIONS_GHC -fno-cse -fno-warn-orphans -fno-warn-warnings-deprecations #-}
 -- -fno-cse is needed for GLOBAL_VAR's to behave properly
@@ -68,6 +71,9 @@ import GHC.Exts
 import System.Console.Haskeline (CompletionFunc, InputT)
 import qualified System.Console.Haskeline as Haskeline
 import Control.Monad.Trans.Class
+import Control.Monad.Trans.Control
+import Control.Monad.Base
+import Control.Monad.Catch
 import Control.Monad.IO.Class
 
 -----------------------------------------------------------------------------
@@ -212,6 +218,22 @@ liftGhc m = GHCi $ \_ -> m
 instance MonadIO GHCi where
   liftIO = liftGhc . liftIO
 
+instance MonadBase IO Ghc where
+  liftBase = liftIO
+
+instance MonadBase IO GHCi where
+  liftBase = liftIO
+
+instance MonadBaseControl IO Ghc where
+  type StM Ghc a = (a, Session)
+  liftBaseWith f = reifyGhc $ \s -> f $ \ghc -> (, s) <$> unGhc ghc s
+  restoreM (a, _) = Ghc $ \_ -> return a
+
+instance MonadBaseControl IO GHCi where
+  type StM GHCi a = (a, Session, IORef GHCiState)
+  liftBaseWith f = reifyGHCi $ \(s, gs) -> f $ \ghci -> (, s, gs) <$> unGhc (unGHCi ghci gs) s
+  restoreM (a, _, _) = GHCi $ \_ -> return a
+
 instance HasDynFlags GHCi where
   getDynFlags = getSessionDynFlags
 
@@ -234,6 +256,18 @@ instance ExceptionMonad GHCi where
                                 g_restore (GHCi m) = GHCi $ \s' -> io_restore (m s')
                              in
                                 unGHCi (f g_restore) s
+
+instance MonadThrow Ghc where
+  throwM = liftIO . throwIO
+
+instance MonadCatch Ghc where
+  catch m h = Ghc $ \r -> unGhc m r `Control.Monad.Catch.catch` (\e -> unGhc (h e) r)
+
+instance MonadThrow GHCi where
+  throwM = liftIO . throwIO
+
+instance MonadCatch GHCi where
+  catch m h = GHCi $ \r -> unGHCi m r `Control.Monad.Catch.catch` (\e -> unGHCi (h e) r)
 
 instance Haskeline.MonadException Ghc where
   controlIO f = Ghc $ \s -> Haskeline.controlIO $ \(Haskeline.RunIO run) -> let
