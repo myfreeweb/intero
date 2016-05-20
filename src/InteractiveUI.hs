@@ -584,10 +584,12 @@ rComplete str = do
   return $ map (\(Completion r _ _) -> r) compls
 
 rType :: String -> ServerT GHCi String
-rType str = do
-  ty <- lift $ GHC.exprType str
-  dflags <- lift $ getDynFlags
-  return $ showSDoc dflags $ sep [text str, nest 2 (dcolon <+> pprTypeForUser ty)]
+rType str = lift $ catch (do
+  ty <- GHC.exprType str
+  dflags <- getDynFlags
+  return $ showSDoc dflags $ sep [text str, nest 2 (dcolon <+> pprTypeForUser ty)]) handleEx
+  where handleEx :: SomeException -> GHCi String
+        handleEx = return . displayException
 
 rTypeAt :: String -> Int -> Int -> Int -> Int -> String -> ServerT GHCi String
 rTypeAt fp sl sc el ec sample = do
