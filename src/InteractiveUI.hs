@@ -3650,7 +3650,7 @@ tryBool m = do
 -- Utils
 
 lookupModule :: GHC.GhcMonad m => String -> m Module
-lookupModule mName = lookupModuleName GHC.mkModuleName mName)
+lookupModule mName = lookupModuleName (GHC.mkModuleName mName)
 
 lookupModuleName :: GHC.GhcMonad m => ModuleName -> m Module
 lookupModuleName mName = GHC.lookupModule mName Nothing
