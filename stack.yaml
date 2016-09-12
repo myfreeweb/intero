@@ -1,9 +1,9 @@
-resolver: lts-5.17
+resolver: nightly-2016-09-12
 packages:
 - '.'
 - location:
     git: https://github.com/myfreeweb/msgpack-haskell.git
-    commit: a015ab145d4bb07ec5c1805215f5bf59662a5540
+    commit: 8764b1e2f85076cfc5e402dd178c6972c3228021
   extra-dep: true
   subdirs:
     - msgpack
