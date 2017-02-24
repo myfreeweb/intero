@@ -88,6 +88,18 @@ load =
                    , "Ok, modules loaded: Main."
                    , "Collecting type info for 1 module(s) ... "]))
         it
+          ":l X.hs; :extensions X"
+          (do result <-
+                withIntero
+                  []
+                  (\dir repl -> do
+                     writeFile (dir ++ "/X.hs") "{-# LANGUAGE ScopedTypeVariables #-}\nmodule X where\nx = 'a'"
+                     _ <- repl (":l X.hs")
+                     repl (":extensions X"))
+              shouldBe
+                (filter (== "ScopedTypeVariables") (words result))
+                ["ScopedTypeVariables"])
+        it
           ":l NonExistent.hs"
           (do result <- withIntero [] (\_ repl -> repl (":l NonExistent.hs"))
               shouldBe
@@ -296,26 +308,38 @@ definition =
   describe
     "Definition location"
     (do it
-          ":loc-at X.hs 1 1 1 1 x -- from definition site"
+          "From definition site"
           (locAt "x = 'a' : x" (1, 1, 1, 1, "x") (unlines ["X.hs:(1,1)-(1,2)"]))
         it
-          ":loc-at X.hs 1 11 1 12 x -- from use site"
+          "From use site"
           (locAt
              "x = 'a' : x"
              (1, 11, 1, 12, "x")
              (unlines ["X.hs:(1,1)-(1,12)"]))
         it
-          ":loc-at X.hs 1 11 1 12 x -- to function argument"
+          "To function argument"
           (locAt
              "f x = 'a' : x"
              (1, 13, 1, 14, "x")
              (unlines ["X.hs:(1,3)-(1,4)"]))
         it
-          ":loc-at X.hs 1 11 1 12 x -- to pattern match"
+          "To pattern match"
           (locAt
              "f (Just x) = 'a' : x"
              (1, 20, 1, 21, "x")
-             (unlines ["X.hs:(1,9)-(1,10)"])))
+             (unlines ["X.hs:(1,9)-(1,10)"]))
+        issue
+          "To unexported thing"
+          "https://github.com/commercialhaskell/intero/issues/98"
+          (locAt
+             (unlines
+                [ "module X () where"
+                , "data MyType = MyCons"
+                , "t :: MyType"
+                , "t = MyCons :: MyType"
+                ])
+             (3, 6, 3, 12, "MyType")
+             (unlines ["X.hs:(2,1)-(2,21)"])))
 
 -- | Test interactive completions.
 completion :: Spec

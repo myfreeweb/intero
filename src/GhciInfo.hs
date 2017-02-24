@@ -6,9 +6,11 @@
 
 module GhciInfo (collectInfo,getModInfo,showppr) where
 
+import           ConLike
 import           Control.Exception
 import           Control.Monad
 import qualified CoreUtils
+import           DataCon
 import           Data.Data
 import           Data.Generics (GenericQ, mkQ, extQ)
 import           Data.List
@@ -76,10 +78,11 @@ getModInfo name =
   do m <- getModSummary name
      p <- parseModule m
      typechecked <- typecheckModule p
+     let Just (_, imports, _, _) = renamedSource typechecked
      allTypes <- processAllTypeCheckedModule typechecked
      let i = tm_checked_module_info typechecked
      now <- liftIO getCurrentTime
-     return (ModInfo m allTypes i now)
+     return (ModInfo m allTypes i now imports)
 
 -- | Get ALL source spans in the module.
 processAllTypeCheckedModule :: GhcMonad m
@@ -148,8 +151,11 @@ getTypeLHsExpr _ e =
 getTypeLPat :: (GhcMonad m)
             => TypecheckedModule -> LPat Id -> m (Maybe (Maybe Id,SrcSpan,Type))
 getTypeLPat _ (L spn pat) =
-  return (Just (getMaybeId pat,spn,hsPatType pat))
+  return (Just (getMaybeId pat,spn,getPatType pat))
   where
+    getPatType (ConPatOut (L _ (RealDataCon dc)) _ _ _ _ _ _) =
+      dataConRepType dc
+    getPatType pat' = hsPatType pat'
 #if __GLASGOW_HASKELL__ >= 800
     getMaybeId (VarPat (L _ vid)) = Just vid
 #else
