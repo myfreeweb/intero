@@ -50,6 +50,8 @@ executable intero
     -Wall -O2 -threaded
   cc-options:
     -fPIC
+  extra-libraries:
+    m
   include-dirs:
     cbits/
   hs-source-dirs:
